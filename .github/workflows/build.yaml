@@ -1,0 +1,113 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags:
+      - '*'
+  pull_request:
+
+jobs:
+
+  build:
+    runs-on: windows-latest
+
+    env:
+      VERSION: v8.0.2
+  
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Setup
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: true
+          install: >-
+            git
+            make
+            diffutils
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-pixman
+
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Fetch qemu
+        run: |
+          git clone --depth 1 --branch ${{ env.VERSION }} https://github.com/qemu/qemu.git  qemu
+
+      - name: Configure
+        run: |
+          cd qemu && ./configure --target-list=x86_64-softmmu --cpu=x86_64
+        
+      - name: build
+        run: |
+          cd qemu && make
+
+      - name: install
+        run: |
+          cd qemu && DESTDIR=install make install
+
+      - name: Move Output
+        run : |
+          mv qemu/build/install/a/_temp/msys64/qemu out
+
+      - name: Copy License files
+        run: |
+          cp qemu/LICENSE qemu/COPYING qemu/COPYING.LIB out
+
+      - name: deploy
+        uses: actions/upload-artifact@v3
+        with:
+          name: qemu-system-x86_64
+          path: out
+
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: qemu-system-x86_64
+          path: qemu
+      
+      - name: package
+        run: |
+          cd qemu && zip -r ../qemu-system-x86_64.zip .
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: ${{ github.ref }}
+          draft: true
+          body: emty
+          prerelease: false
+
+      - name: Upload Release Artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./qemu-system-x86_64.zip
+          asset_name: qemu-system-x86_64.zip
+          asset_content_type: application/zip
+      
